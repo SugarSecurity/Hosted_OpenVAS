@@ -1,0 +1,19 @@
+{
+    "version": 3,
+    "deployment": {
+        "manifest": {
+            "time": "2024-05-27T14:13:52.5987933-05:00",
+            "magic": "48b2cc90b770e8e0d16272e1748907818eb6a7cb89163981ecb8d12f701c5592",
+            "version": "v3.116.1"
+        },
+        "secrets_providers": {
+            "type": "service",
+            "state": {
+                "url": "https://api.pulumi.com",
+                "owner": "sw33tr0ll",
+                "project": "hosted-openvas",
+                "stack": "dev"
+            }
+        }
+    }
+}

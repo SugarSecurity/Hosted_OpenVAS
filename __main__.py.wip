@@ -1,0 +1,390 @@
+import pulumi
+import pulumi_aws as aws
+import pulumi_awsx as awsx
+
+# Fetch the default VPC
+default_vpc = aws.ec2.get_vpc(default=True)
+
+# Fetch the subnets associated with the default VPC
+default_subnets = aws.ec2.get_subnets(filters=[aws.ec2.GetSubnetsFilterArgs(
+    name="vpc-id",
+    values=[default_vpc.id]
+)])
+
+# Define the security group
+security_group = aws.ec2.SecurityGroup("securityGroup",
+    description="Allow necessary traffic",
+    vpc_id=default_vpc.id,
+    ingress=[
+        aws.ec2.SecurityGroupIngressArgs(
+            protocol="tcp",
+            from_port=80,
+            to_port=80,
+            cidr_blocks=["0.0.0.0/0"],
+        ),
+        aws.ec2.SecurityGroupIngressArgs(
+            protocol="tcp",
+            from_port=443,
+            to_port=443,
+            cidr_blocks=["0.0.0.0/0"],
+        ),
+        aws.ec2.SecurityGroupIngressArgs(
+            protocol="tcp",
+            from_port=9392,
+            to_port=9392,
+            cidr_blocks=["0.0.0.0/0"],  # External access for GSA
+        ),
+        aws.ec2.SecurityGroupIngressArgs(
+            protocol="tcp",
+            from_port=0,
+            to_port=0,
+            cidr_blocks=[default_vpc.cidr_block],
+        ),
+    ],
+    egress=[
+        aws.ec2.SecurityGroupEgressArgs(
+            protocol="tcp",
+            from_port=0,
+            to_port=0,
+            cidr_blocks=["0.0.0.0/0"],
+        ),
+    ],
+)
+
+# Create an EFS file system
+efs = aws.efs.FileSystem("efs", 
+    lifecycle_policies=[aws.efs.FileSystemLifecyclePolicyArgs(
+        transition_to_ia="AFTER_30_DAYS",
+    )]
+)
+
+# Create EFS mount targets for each subnet
+efs_mount_targets = []
+for subnet_id in default_subnets.ids:
+    efs_mount_targets.append(aws.efs.MountTarget(f"efs-mount-target-{subnet_id}",
+        file_system_id=efs.id,
+        subnet_id=subnet_id,
+        security_groups=[security_group.id]
+    ))
+
+# Create an ECS cluster
+cluster = aws.ecs.Cluster("greenbone-cluster",
+    name="greenbone-cluster",
+    tags={
+        "Name": "greenbone-cluster",
+    },
+    settings=[aws.ecs.ClusterSettingArgs(
+        name="containerInsights",
+        value="enabled",
+    )],
+)
+
+# Define the Docker images
+images = {
+    "vulnerability-tests": "greenbone/vulnerability-tests",
+    "notus-data": "greenbone/notus-data",
+    "scap-data": "greenbone/scap-data",
+    "cert-bund-data": "greenbone/cert-bund-data",
+    "dfn-cert-data": "greenbone/dfn-cert-data",
+    "data-objects": "greenbone/data-objects",
+    "report-formats": "greenbone/report-formats",
+    "gpg-data": "greenbone/gpg-data",
+    "redis-server": "greenbone/redis-server",
+    "pg-gvm": "greenbone/pg-gvm:stable",
+    "gvmd": "greenbone/gvmd:stable",
+    "gsa": "greenbone/gsa:stable",
+    "configure-openvas": "greenbone/openvas-scanner:stable",
+    "openvas": "greenbone/openvas-scanner:stable",
+    "openvasd": "greenbone/openvas-scanner:stable",
+    "ospd-openvas": "greenbone/ospd-openvas:stable",
+    "gvm-tools": "greenbone/gvm-tools",
+}
+
+# Define the volumes using EFS
+volumes = {
+    "vt_data_vol": {"name": "vt_data_vol", "efs_id": efs.id, "container_path": "/mnt/vt_data"},
+    "notus_data_vol": {"name": "notus_data_vol", "efs_id": efs.id, "container_path": "/mnt/notus_data"},
+    "scap_data_vol": {"name": "scap_data_vol", "efs_id": efs.id, "container_path": "/mnt/scap_data"},
+    "cert_data_vol": {"name": "cert_data_vol", "efs_id": efs.id, "container_path": "/mnt/cert_data"},
+    "data_objects_vol": {"name": "data_objects_vol", "efs_id": efs.id, "container_path": "/mnt/data_objects"},
+    "gpg_data_vol": {"name": "gpg_data_vol", "efs_id": efs.id, "container_path": "/mnt/gpg_data"},
+    "redis_socket_vol": {"name": "redis_socket_vol", "efs_id": efs.id, "container_path": "/run/redis"},
+    "psql_data_vol": {"name": "psql_data_vol", "efs_id": efs.id, "container_path": "/mnt/psql_data"},
+    "psql_socket_vol": {"name": "psql_socket_vol", "efs_id": efs.id, "container_path": "/run/postgresql"},
+    "gvmd_socket_vol": {"name": "gvmd_socket_vol", "efs_id": efs.id, "container_path": "/run/gvmd"},
+    "ospd_openvas_socket_vol": {"name": "ospd_openvas_socket_vol", "efs_id": efs.id, "container_path": "/run/ospd"},
+    "openvas_data_vol": {"name": "openvas_data_vol", "efs_id": efs.id, "container_path": "/etc/openvas"},
+    "openvas_log_data_vol": {"name": "openvas_log_data_vol", "efs_id": efs.id, "container_path": "/var/log/openvas"},
+}
+
+# Define the network configurations
+subnet_ids = [subnet for subnet in default_subnets.ids]
+
+public_network_configuration = aws.ecs.ServiceNetworkConfigurationArgs(
+    subnets=subnet_ids,
+    security_groups=[security_group.id],
+    assign_public_ip=True
+)
+
+private_network_configuration = aws.ecs.ServiceNetworkConfigurationArgs(
+    subnets=subnet_ids,
+    security_groups=[security_group.id]
+)
+
+log_groups = {}
+for service_name in images.keys():
+    log_groups[service_name] = aws.cloudwatch.LogGroup(service_name,
+        name=f"/ecs/{service_name}",
+        retention_in_days=7  # Set retention policy as per your requirements
+    )
+
+# Define the Fargate task definition
+def create_task_definition(name, image, volumes, environment=None, command=None, port_mappings=None, memory="512", cpu="256", depends_on=None):
+    return awsx.ecs.FargateTaskDefinition(name,
+        container=awsx.ecs.TaskDefinitionContainerDefinitionArgs(
+            name=name,
+            image=image,
+            essential=True,
+            port_mappings=port_mappings or [],
+            environment=[{"name": k, "value": v} for k, v in (environment or {}).items()],
+            log_configuration={
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": f"/ecs/{name}",
+                    "awslogs-region": "us-east-1",
+                    "awslogs-stream-prefix": "ecs",
+                },
+            },
+            command=command,
+            mount_points=[{"sourceVolume": v["name"], "containerPath": v["container_path"]} for v in volumes],
+            depends_on=[awsx.ecs.TaskDefinitionContainerDependencyArgs(
+                container_name=dep,
+                condition="HEALTHY"
+            ) for dep in (depends_on or [])]
+        ),
+        memory=memory,
+        cpu=cpu,
+        volumes=[aws.ecs.TaskDefinitionVolumeArgs(
+            name=v["name"],
+            efs_volume_configuration=aws.ecs.TaskDefinitionVolumeEfsVolumeConfigurationArgs(
+                file_system_id=v["efs_id"]
+            )
+        ) for v in volumes],
+    )
+
+# Define the task definitions
+task_definitions = {
+    "vulnerability-tests": create_task_definition("vulnerability-tests", images["vulnerability-tests"], [volumes["vt_data_vol"]],
+        environment={"STORAGE_PATH": "/var/lib/openvas/22.04/vt-data/nasl"}, memory="2048", cpu="1024"),
+    
+    "notus-data": create_task_definition("notus-data", images["notus-data"], [volumes["notus_data_vol"]], memory="2048", cpu="1024"),
+    
+    "scap-data": create_task_definition("scap-data", images["scap-data"], [volumes["scap_data_vol"]], memory="2048", cpu="1024"),
+    
+    "cert-bund-data": create_task_definition("cert-bund-data", images["cert-bund-data"], [volumes["cert_data_vol"]], memory="2048", cpu="1024"),
+    
+    "dfn-cert-data": create_task_definition("dfn-cert-data", images["dfn-cert-data"], [volumes["cert_data_vol"]], memory="2048", cpu="1024"),
+    
+    "data-objects": create_task_definition("data-objects", images["data-objects"], [volumes["data_objects_vol"]], memory="2048", cpu="1024"),
+    
+    "report-formats": create_task_definition("report-formats", images["report-formats"], [volumes["data_objects_vol"]], memory="2048", cpu="1024"),
+    
+    "gpg-data": create_task_definition("gpg-data", images["gpg-data"], [volumes["gpg_data_vol"]], memory="2048", cpu="1024"),
+    
+    "redis-server": create_task_definition("redis-server", images["redis-server"], [volumes["redis_socket_vol"]],
+        port_mappings=[awsx.ecs.TaskDefinitionPortMappingArgs(container_port=6379)], memory="2048", cpu="1024"),
+    
+    "pg-gvm": create_task_definition("pg-gvm", images["pg-gvm"], [volumes["psql_data_vol"], volumes["psql_socket_vol"]],
+        port_mappings=[awsx.ecs.TaskDefinitionPortMappingArgs(container_port=5432)], memory="8192", cpu="2048"),
+    
+    "gvmd": create_task_definition("gvmd", images["gvmd"], [
+        volumes["psql_data_vol"], volumes["psql_socket_vol"], volumes["gvmd_socket_vol"], volumes["ospd_openvas_socket_vol"],
+        volumes["vt_data_vol"], volumes["data_objects_vol"], volumes["cert_data_vol"], volumes["scap_data_vol"],
+        volumes["openvas_log_data_vol"], volumes["openvas_data_vol"]
+    ], memory="8192", cpu="2048"),
+    
+    "gsa": create_task_definition("gsa", images["gsa"], [volumes["gvmd_socket_vol"]],
+        port_mappings=[awsx.ecs.TaskDefinitionPortMappingArgs(container_port=80)], memory="2048", cpu="1024"),
+    
+    "configure-openvas": create_task_definition("configure-openvas", images["configure-openvas"], [
+        volumes["openvas_data_vol"], volumes["openvas_log_data_vol"]
+    ], command=[
+        "/bin/sh", "-c", "printf 'table_driven lsc = yes\nopenvasd_server = http://openvasd:80\n' > /mnt/openvas.conf && "
+        "sed 's/127/128/' /etc/openvas/openvas_log.conf | sed 's/gvm/openvas/' > /mnt/openvas_log.conf && "
+        "chmod 644 /mnt/openvas.conf && chmod 644 /mnt/openvas_log.conf && touch /var/log/openvas/openvas.log && "
+        "chmod 666 /var/log/openvas.openvas.log"
+    ], memory="2048", cpu="1024"),
+    
+    "openvas": create_task_definition("openvas", images["openvas"], [
+        volumes["openvas_data_vol"], volumes["openvas_log_data_vol"]
+    ], command=[
+        "/bin/sh", "-c", "cat /etc/openvas/openvas.conf && tail -f /var/log/openvas/openvas.log"
+    ], memory="8192", cpu="2048"),
+    
+    "openvasd": create_task_definition("openvasd", images["openvasd"], [
+        volumes["openvas_data_vol"], volumes["openvas_log_data_vol"], volumes["gpg_data_vol"], volumes["notus_data_vol"]
+    ], environment={
+        "OPENVASD_MOD": "service_notus",
+        "GNUPGHOME": "/etc/openvas/gnupg",
+        "LISTENING": "0.0.0.0:80",
+    }, memory="2048", cpu="1024"),
+    
+    "ospd-openvas": create_task_definition("ospd-openvas", images["ospd-openvas"], [
+        volumes["gpg_data_vol"], volumes["vt_data_vol"], volumes["notus_data_vol"], volumes["ospd_openvas_socket_vol"],
+        volumes["redis_socket_vol"], volumes["openvas_data_vol"], volumes["openvas_log_data_vol"]
+    ], command=[
+        "ospd-openvas", "-f", "--config", "/etc/gvm/ospd-openvas.conf", "--notus-feed-dir", "/var/lib/notus/advisories", "-m", "666"
+    ], memory="2048", cpu="1024"),
+    
+    "gvm-tools": create_task_definition("gvm-tools", images["gvm-tools"], [
+        volumes["gvmd_socket_vol"], volumes["ospd_openvas_socket_vol"]
+    ], memory="2048", cpu="1024"),
+}
+
+services = {}
+
+services["vulnerability-tests"] = awsx.ecs.FargateService("vulnerability-tests",
+    cluster=cluster.arn,
+    task_definition=task_definitions["vulnerability-tests"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration
+)
+
+services["notus-data"] = awsx.ecs.FargateService("notus-data",
+    cluster=cluster.arn,
+    task_definition=task_definitions["notus-data"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration
+)
+
+services["scap-data"] = awsx.ecs.FargateService("scap-data",
+    cluster=cluster.arn,
+    task_definition=task_definitions["scap-data"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration
+)
+
+services["cert-bund-data"] = awsx.ecs.FargateService("cert-bund-data",
+    cluster=cluster.arn,
+    task_definition=task_definitions["cert-bund-data"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration
+)
+
+services["dfn-cert-data"] = awsx.ecs.FargateService("dfn-cert-data",
+    cluster=cluster.arn,
+    task_definition=task_definitions["dfn-cert-data"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration,
+    opts=pulumi.ResourceOptions(depends_on=[services["cert-bund-data"]])
+)
+
+services["data-objects"] = awsx.ecs.FargateService("data-objects",
+    cluster=cluster.arn,
+    task_definition=task_definitions["data-objects"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration
+)
+
+services["report-formats"] = awsx.ecs.FargateService("report-formats",
+    cluster=cluster.arn,
+    task_definition=task_definitions["report-formats"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration,
+    opts=pulumi.ResourceOptions(depends_on=[services["data-objects"]])
+)
+
+services["gpg-data"] = awsx.ecs.FargateService("gpg-data",
+    cluster=cluster.arn,
+    task_definition=task_definitions["gpg-data"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration
+)
+
+services["redis-server"] = awsx.ecs.FargateService("redis-server",
+    cluster=cluster.arn,
+    task_definition=task_definitions["redis-server"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration
+)
+
+services["pg-gvm"] = awsx.ecs.FargateService("pg-gvm",
+    cluster=cluster.arn,
+    task_definition=task_definitions["pg-gvm"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration
+)
+
+services["gvmd"] = awsx.ecs.FargateService("gvmd",
+    cluster=cluster.arn,
+    task_definition=task_definitions["gvmd"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration,
+    opts=pulumi.ResourceOptions(depends_on=[
+        services["pg-gvm"],
+        services["scap-data"],
+        services["cert-bund-data"],
+        services["dfn-cert-data"],
+        services["data-objects"],
+        services["report-formats"]
+    ])
+)
+
+services["gsa"] = awsx.ecs.FargateService("gsa",
+    cluster=cluster.arn,
+    task_definition=task_definitions["gsa"].task_definition.arn,
+    desired_count=1,
+    network_configuration=public_network_configuration,
+    opts=pulumi.ResourceOptions(depends_on=[services["gvmd"]])
+)
+
+services["configure-openvas"] = awsx.ecs.FargateService("configure-openvas",
+    cluster=cluster.arn,
+    task_definition=task_definitions["configure-openvas"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration
+)
+
+services["openvas"] = awsx.ecs.FargateService("openvas",
+    cluster=cluster.arn,
+    task_definition=task_definitions["openvas"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration,
+    opts=pulumi.ResourceOptions(depends_on=[services["configure-openvas"]])
+)
+
+services["openvasd"] = awsx.ecs.FargateService("openvasd",
+    cluster=cluster.arn,
+    task_definition=task_definitions["openvasd"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration,
+    opts=pulumi.ResourceOptions(depends_on=[
+        services["vulnerability-tests"],
+        services["configure-openvas"],
+        services["gpg-data"]
+    ])
+)
+
+services["ospd-openvas"] = awsx.ecs.FargateService("ospd-openvas",
+    cluster=cluster.arn,
+    task_definition=task_definitions["ospd-openvas"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration,
+    opts=pulumi.ResourceOptions(depends_on=[
+        services["redis-server"],
+        services["gpg-data"],
+        services["vulnerability-tests"],
+        services["configure-openvas"]
+    ])
+)
+
+services["gvm-tools"] = awsx.ecs.FargateService("gvm-tools",
+    cluster=cluster.arn,
+    task_definition=task_definitions["gvm-tools"].task_definition.arn,
+    desired_count=1,
+    network_configuration=private_network_configuration,
+    opts=pulumi.ResourceOptions(depends_on=[
+        services["gvmd"],
+        services["ospd-openvas"]
+    ])
+)

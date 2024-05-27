@@ -1,0 +1,11 @@
+name: hosted-openvas
+runtime:
+  name: python
+  options:
+    virtualenv: venv
+description: A minimal AWS Python Pulumi program
+config:
+  aws:region: us-east-1
+  pulumi:tags:
+    value:
+      pulumi:template: ""
