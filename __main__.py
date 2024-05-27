@@ -2,7 +2,7 @@ import pulumi
 import pulumi_aws as aws
 
 # Define EC2 instance details
-instance_type = "t2.micro"
+instance_type = "t2.medium"
 ami = "ami-0c55b159cbfafe1f0"  # Amazon Linux 2 AMI (for example, update to latest if needed)
 
 # Define the User Data script
