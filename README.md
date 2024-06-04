@@ -7,13 +7,13 @@ A good middle ground between Open Source from Scratch and a Commercial Service
 ## Minimum Requirements
 
 - [python 3.11+](https://www.python.org/downloads/)
+- [awscli](https://aws.amazon.com/cli/)
 
 ## Recommended Requirements
 
 - [devbox](https://www.jetify.com/devbox/docs/quickstart/)
 - [asdf](https://asdf-vm.com/#/core-manage-asdf)
 - [poetry](https://python-poetry.org/docs/)
-- [awscli](https://aws.amazon.com/cli/)
 
 ## Quickstart
 
@@ -31,21 +31,34 @@ source .venv/bin/activate
 # install dependencies
 python -m pip install -r requirements.txt
 
-# create stack if not already created
+# configure aws cli (if not already configured)
+aws configure
+
+# set env vars
+export ORG_NAME="<org-name>"
+export STACK_NAME="<stack-name>"
+export STACK="${ORG_NAME}/${STACK_NAME}"
+
+# set org name
+pulumi org set-default "$ORG_NAME"
+
+# create stack (if not already created)
+pulumi stack init "$STACK"
+
+# plan
 pulumi preview
 
-# deploy stack
+# apply stack
 pulumi up
 
 # connect to instance
 export SSH_KEY="~/.ssh/id_rsa"
-export STACK="<org-name>/<stack-name>"
 export IP_ADDR=$(pulumi stack -s "$STACK" output public_ip)
 ssh -i "$SSH_KEY" "ec2-user@${IP_ADDR}"
 
 # run openvas
 
-# delete stack
+# destroy stack
 pulumi destroy
 ```
 
