@@ -1,3 +1,20 @@
-pulumi
-pulumi-aws
-pulumi-awsx
+arpeggio==2.0.2 ; python_version >= "3.11" and python_version < "3.13"
+attrs==23.2.0 ; python_version >= "3.11" and python_version < "3.13"
+boto3==1.34.118 ; python_version >= "3.11" and python_version < "3.13"
+botocore==1.34.118 ; python_version >= "3.11" and python_version < "3.13"
+dill==0.3.8 ; python_version >= "3.11" and python_version < "3.13"
+grpcio==1.60.1 ; python_version >= "3.11" and python_version < "3.13"
+jmespath==1.0.1 ; python_version >= "3.11" and python_version < "3.13"
+parver==0.5 ; python_version >= "3.11" and python_version < "3.13"
+protobuf==4.25.3 ; python_version >= "3.11" and python_version < "3.13"
+pulumi-aws==6.38.0 ; python_version >= "3.11" and python_version < "3.13"
+pulumi-awsx==2.11.0 ; python_version >= "3.11" and python_version < "3.13"
+pulumi-docker==4.5.4 ; python_version >= "3.11" and python_version < "3.13"
+pulumi==3.118.0 ; python_version >= "3.11" and python_version < "3.13"
+python-dateutil==2.9.0.post0 ; python_version >= "3.11" and python_version < "3.13"
+python-decouple==3.8 ; python_version >= "3.11" and python_version < "3.13"
+pyyaml==6.0.1 ; python_version >= "3.11" and python_version < "3.13"
+s3transfer==0.10.1 ; python_version >= "3.11" and python_version < "3.13"
+semver==2.13.0 ; python_version >= "3.11" and python_version < "3.13"
+six==1.16.0 ; python_version >= "3.11" and python_version < "3.13"
+urllib3==2.2.1 ; python_version >= "3.11" and python_version < "3.13"
