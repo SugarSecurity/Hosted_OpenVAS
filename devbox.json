@@ -3,14 +3,22 @@
     "python@3.11.9",
     "python311Packages.pip@latest",
     "asdf-vm@latest",
+    "awscli2@latest",
+    "coreutils@latest",
     "docker@latest",
     "gh@latest",
     "git@latest",
     "gnumake@latest",
     "go-task@latest",
+    "jq@latest",
     "nodejs@21.4.0",
     "openssl@latest",
-    "poetry@latest"
+    "poetry@latest",
+    "pulumi-bin@latest",
+    "ruff@latest",
+    "s3cmd@latest",
+    "uv@latest",
+    "yq-go@latest"
   ],
   "env": {
     "VENV_DIR": ".venv"
